@@ -2,6 +2,10 @@
 Speech Tokenizer Encoder
 
 Encodes audio to speech tokens using CosyVoice3's ONNX tokenizer.
+
+Two tokenizer modes available:
+1. Regular tokenizer (speech_tokenizer_v3.onnx) - default, single input processing
+2. Batch tokenizer (speech_tokenizer_v3.batch.onnx) - optimized for batch processing
 """
 
 import types
@@ -38,9 +42,12 @@ class SpeechTokenizer:
 
     Args:
         model_dir: Path to CosyVoice3 model directory
+        use_batch_tokenizer: If True, use batch tokenizer (speech_tokenizer_v3.batch.onnx).
+                           If False, use regular tokenizer (speech_tokenizer_v3.onnx).
     """
 
-    def __init__(self, model_dir: str = 'pretrained_models/Fun-CosyVoice3-0.5B'):
+    def __init__(self, model_dir: str = 'pretrained_models/Fun-CosyVoice3-0.5B',
+                 use_batch_tokenizer: bool = False):
         # Add Matcha-TTS to path
         project_root = Path(__file__).parent.parent.parent
         sys.path.append(str(project_root / 'third_party' / 'Matcha-TTS'))
@@ -49,16 +56,33 @@ class SpeechTokenizer:
         from cosyvoice.cli.cosyvoice import CosyVoice3
         from cosyvoice.utils.file_utils import load_wav
         import whisper
+        import onnxruntime
 
         self.load_wav = load_wav
         self.whisper = whisper
+        self.use_batch_tokenizer = use_batch_tokenizer
+        self.model_dir = model_dir
 
         # Load model
         self.model = CosyVoice3(model_dir=model_dir)
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+        # Initialize batch tokenizer if requested
+        if use_batch_tokenizer:
+            batch_tokenizer_path = f"{model_dir}/speech_tokenizer_v3.batch.onnx"
+            option = onnxruntime.SessionOptions()
+            option.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+            option.intra_op_num_threads = 1
+            self.batch_tokenizer_session = onnxruntime.InferenceSession(
+                batch_tokenizer_path,
+                sess_options=option,
+                providers=["CUDAExecutionProvider" if torch.cuda.is_available() else "CPUExecutionProvider"]
+            )
+            print(f"[SpeechTokenizer] Initialized batch tokenizer: {batch_tokenizer_path}")
+
         print(f"[SpeechTokenizer] Initialized on {self.device}")
         print(f"[SpeechTokenizer] Model sample rate: {self.model.sample_rate} Hz")
+        print(f"[SpeechTokenizer] Using batch tokenizer: {use_batch_tokenizer}")
 
     def audio_to_mel(self, audio_path: str) -> torch.Tensor:
         """
@@ -149,6 +173,94 @@ class SpeechTokenizer:
         tokens_np = self.encode(audio_path)
         tokens_tensor = torch.from_numpy(tokens_np).unsqueeze(0).long()
         return tokens_tensor
+
+    def encode_with_batch_tokenizer(self, audio_path: str) -> np.ndarray:
+        """
+        Encode audio to speech tokens using batch tokenizer (v3 batch).
+
+        This uses the speech_tokenizer_v3.batch.onnx model which is optimized
+        for batch processing and used internally by Flow and LLM modules.
+
+        Args:
+            audio_path: Path to audio file
+
+        Returns:
+            Speech tokens as numpy array (shape: [num_tokens])
+        """
+        if not self.use_batch_tokenizer:
+            raise ValueError("Batch tokenizer not initialized. Set use_batch_tokenizer=True during initialization.")
+
+        # Load and preprocess audio
+        audio_16k = self.load_wav(audio_path, 16000)
+
+        # Extract mel spectrogram
+        mel = self.whisper.log_mel_spectrogram(audio_16k, n_mels=128)
+
+        # Add batch dimension for batch tokenizer
+        mel_batch = mel.unsqueeze(0)  # [1, 1, 128, time]
+
+        # Run batch speech tokenizer
+        tokens_np = self.batch_tokenizer_session.run(None, {
+            self.batch_tokenizer_session.get_inputs()[0].name: mel_batch.cpu().numpy(),
+            self.batch_tokenizer_session.get_inputs()[1].name: np.array([mel.shape[2]], dtype=np.int32)
+        })[0].flatten()
+
+        compression_ratio = audio_16k.shape[1] / len(tokens_np)
+
+        print(f"[SpeechTokenizer] Encoded {audio_path} (batch tokenizer)")
+        print(f"[SpeechTokenizer]   Tokens: {len(tokens_np)}")
+        print(f"[SpeechTokenizer]   Compression: {compression_ratio:.1f}x")
+
+        return tokens_np
+
+    def encode_batch(self, audio_paths: list) -> list:
+        """
+        Encode multiple audio files to speech tokens using batch tokenizer.
+
+        Args:
+            audio_paths: List of paths to audio files
+
+        Returns:
+            List of speech token arrays
+        """
+        if not self.use_batch_tokenizer:
+            raise ValueError("Batch tokenizer not initialized. Set use_batch_tokenizer=True during initialization.")
+
+        # Process all audio files
+        mels = []
+        mel_lengths = []
+        for audio_path in audio_paths:
+            audio_16k = self.load_wav(audio_path, 16000)
+            mel = self.whisper.log_mel_spectrogram(audio_16k, n_mels=128)
+            mels.append(mel)
+            mel_lengths.append(mel.shape[2])
+
+        # Pad to same length
+        max_len = max(mel_lengths)
+        mels_padded = []
+        for mel in mels:
+            if mel.shape[2] < max_len:
+                pad = torch.zeros(1, 128, max_len - mel.shape[2])
+                mel = torch.cat([mel, pad], dim=2)
+            mels_padded.append(mel)
+
+        # Stack into batch
+        mel_batch = torch.stack(mels_padded, dim=0)  # [batch, 1, 128, time]
+
+        # Run batch speech tokenizer
+        tokens_batch = self.batch_tokenizer_session.run(None, {
+            self.batch_tokenizer_session.get_inputs()[0].name: mel_batch.cpu().numpy(),
+            self.batch_tokenizer_session.get_inputs()[1].name: np.array(mel_lengths, dtype=np.int32)
+        })[0]
+
+        # Extract individual token sequences
+        results = []
+        for i, audio_path in enumerate(audio_paths):
+            tokens = tokens_batch[i, :mel_lengths[i] // 4]  # Account for downsampling
+            results.append(tokens.flatten())
+            print(f"[SpeechTokenizer] Encoded {audio_path} -> {len(tokens)} tokens")
+
+        return results
 
     def save_tokens(self, tokens: np.ndarray, output_path: str):
         """Save speech tokens to numpy file."""

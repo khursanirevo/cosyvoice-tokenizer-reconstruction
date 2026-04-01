@@ -5,6 +5,8 @@ Tools for encoding audio to speech tokens, decoding back to audio, and performin
 ## Features
 
 - **Speech Tokenization**: Encode audio to discrete speech tokens using CosyVoice3's tokenizer
+  - Regular tokenizer (speech_tokenizer_v3.onnx) - single input processing
+  - Batch tokenizer (speech_tokenizer_v3.batch.onnx) - optimized for batch processing
 - **Speech Decoding**: Decode speech tokens back to audio using Flow model + HiFi-GAN
 - **Voice Conversion**: Convert speech from source voice to target voice (bypasses LLM)
 - **Intermediate Representations**: Access mel-spectrograms and tokens at each stage
@@ -60,6 +62,7 @@ converter.convert_to_file(
 
 Encodes audio to speech tokens using CosyVoice3's speech tokenizer.
 
+**Regular Tokenizer (default):**
 ```python
 from tokenizer_reconstruction import SpeechTokenizer
 
@@ -74,6 +77,23 @@ mel = tokenizer.audio_to_mel('audio.wav')
 # Mel-spectrogram → Speech tokens
 tokens = tokenizer.mel_to_tokens(mel)
 ```
+
+**Batch Tokenizer (v3 batch):**
+```python
+from tokenizer_reconstruction import SpeechTokenizer
+
+# Initialize with batch tokenizer
+tokenizer = SpeechTokenizer(use_batch_tokenizer=True)
+
+# Single file with batch tokenizer
+tokens = tokenizer.encode_with_batch_tokenizer('audio.wav')
+
+# Batch processing multiple files
+audio_files = ['audio1.wav', 'audio2.wav', 'audio3.wav']
+tokens_list = tokenizer.encode_batch(audio_files)
+```
+
+**Note:** The batch tokenizer (`speech_tokenizer_v3.batch.onnx`) is the same model used internally by CosyVoice3's Flow and LLM modules. It's optimized for batch processing.
 
 ### SpeechDecoder
 
