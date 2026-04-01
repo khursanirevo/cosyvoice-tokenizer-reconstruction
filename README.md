@@ -7,6 +7,7 @@ Tools for encoding audio to speech tokens, decoding back to audio, and performin
 - **Speech Tokenization**: Encode audio to discrete speech tokens using CosyVoice3's tokenizer
   - Regular tokenizer (speech_tokenizer_v3.onnx) - single input processing
   - Batch tokenizer (speech_tokenizer_v3.batch.onnx) - optimized for batch processing
+  - Perceiver tokenizer (SpeechTokenExtractor) - same as Flow/LLM modules use internally
 - **Speech Decoding**: Decode speech tokens back to audio using Flow model + HiFi-GAN
 - **Voice Conversion**: Convert speech from source voice to target voice (bypasses LLM)
 - **Intermediate Representations**: Access mel-spectrograms and tokens at each stage
@@ -93,7 +94,22 @@ audio_files = ['audio1.wav', 'audio2.wav', 'audio3.wav']
 tokens_list = tokenizer.encode_batch(audio_files)
 ```
 
-**Note:** The batch tokenizer (`speech_tokenizer_v3.batch.onnx`) is the same model used internally by CosyVoice3's Flow and LLM modules. It's optimized for batch processing.
+**Perceiver Tokenizer (SpeechTokenExtractor):**
+```python
+from tokenizer_reconstruction import SpeechTokenizer
+
+# Initialize with perceiver tokenizer (uses SpeechTokenExtractor class)
+tokenizer = SpeechTokenizer(use_perceiver=True)
+
+# Single file with perceiver tokenizer
+tokens = tokenizer.encode_with_perceiver('audio.wav')
+
+# Batch processing with perceiver tokenizer
+audio_files = ['audio1.wav', 'audio2.wav', 'audio3.wav']
+tokens_list = tokenizer.encode_batch_perceiver(audio_files)
+```
+
+**Note:** The Perceiver tokenizer uses `SpeechTokenExtractor`, which is the exact same class used internally by CosyVoice3's Flow and LLM modules. This provides identical tokenization to what's used during model inference.
 
 ### SpeechDecoder
 
